@@ -1,76 +1,133 @@
 # This is a basic workflow to help you get started with Actions
+ 
 name: CI
-
+ 
 # Controls when the workflow will run
 on:
   # Triggers the workflow on push or pull request events but only for the "main" branch
   push:
     branches: [ "main" ]
+ 
   pull_request:
     branches: [ "main" ]
-
+ 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
-
+ 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  
-  # 1. BUILD JOB
+ 
+  # ── 1. BUILD JOB ────────────────────────────────────────────────────
   build:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+ 
+      # Checks-out your repository under $GITHUB_WORKSPACE
       - uses: actions/checkout@v4
-
+ 
+      # ── ServiceNow DevOps: Register Build with ServiceNow ──────────
+      - name: ServiceNow DevOps Build Register
+        uses: ServiceNow/servicenow-devops-build-register@v3.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url:             ${{ secrets.SN_INSTANCE_URL }}
+          tool-id:                  ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github:           ${{ toJSON(github) }}
+          job-name:                 'build'
+          display-name:             'CI Build'
+ 
       # Runs a single command using the runners shell
       - name: Run a one-line script
         run: echo Hello, world!
-
+ 
       # Runs a set of commands using the runners shell
       - name: Run a multi-line script
         run: |
           echo Add other actions to build,
           echo test, and deploy your project.
-
-  # 2. TEST JOB
+ 
+  # ── 2. TEST JOB ─────────────────────────────────────────────────────
   test:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    needs: build                         # Runs only after build succeeds
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+ 
       - uses: actions/checkout@v4
-
-      # Runs a single command using the runners shell
+ 
+      # ── ServiceNow DevOps: Register Test Results ───────────────────
+      - name: ServiceNow DevOps Test Register
+        uses: ServiceNow/servicenow-devops-test-summary@v3.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url:             ${{ secrets.SN_INSTANCE_URL }}
+          tool-id:                  ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github:           ${{ toJSON(github) }}
+          job-name:                 'test'
+          xml-report-filename:      ''   # Optional: path to JUnit XML report
+ 
       - name: Run a one-line script
         run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
+ 
       - name: Run a multi-line script
         run: |
           echo Add other actions to build,
           echo test, and deploy your project.
-
-  # 3. DEPLOY JOB
+ 
+  # ── 3. CHANGE REQUEST JOB ───────────────────────────────────────────
+  # Sits between Test and Deploy — creates CR and WAITS for approval
+  change-request:
+    runs-on: ubuntu-latest
+    needs: test                          # Runs only after test succeeds
+    steps:
+ 
+      - uses: actions/checkout@v4
+ 
+      # ── ServiceNow DevOps: Create CR & Gate on Approval ───────────
+      - name: ServiceNow DevOps Change Automation
+        uses: ServiceNow/servicenow-devops-change@v3.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url:             ${{ secrets.SN_INSTANCE_URL }}
+          tool-id:                  ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github:           ${{ toJSON(github) }}
+          job-name:                 'change-request'
+          change-request: >
+            {
+              "setCloseCode": "true",
+              "attributes": {
+                "short_description":   "Automated CR: ${{ github.event.head_commit.message }}",
+                "description":         "Workflow: ${{ github.workflow }} | Branch: ${{ github.ref_name }} | Commit: ${{ github.sha }} | Actor: ${{ github.actor }}",
+                "assignment_group":    "DevOps Team",
+                "implementation_plan": "Automated deployment via GitHub Actions CI pipeline",
+                "backout_plan":        "Revert commit and redeploy previous build artifact",
+                "test_plan":           "Automated unit and integration tests via CI pipeline",
+                "type":                "normal",
+                "chg_model":           "Change Velocity"
+              }
+            }
+ 
+  # ── 4. DEPLOY JOB ───────────────────────────────────────────────────
   deploy:
-       # The type of runner that the job will run on
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    needs: change-request                # Runs ONLY after CR is approved
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+ 
       - uses: actions/checkout@v4
-
-      # Runs a single command using the runners shell
+ 
       - name: Run a one-line script
         run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
+ 
       - name: Run a multi-line script
         run: |
           echo Add other actions to build,
           echo test, and deploy your project.
+ 
+      # ── ServiceNow DevOps: Notify Deployment to ServiceNow ─────────
+      - name: ServiceNow DevOps Deployment Notification
+        uses: ServiceNow/servicenow-devops-deploy@v3.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url:             ${{ secrets.SN_INSTANCE_URL }}
+          tool-id:                  ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github:           ${{ toJSON(github) }}
+          job-name:                 'deploy'
